@@ -30,3 +30,9 @@ require (
 	k8s.io/client-go v0.19.0
 	k8s.io/klog v0.3.1
 )
+
+replace (
+	k8s.io/api => /home/uablrek/go/src/k8s.io/kubernetes/staging/src/k8s.io/api
+	k8s.io/apimachinery => /home/uablrek/go/src/k8s.io/kubernetes/staging/src/k8s.io/apimachinery
+	k8s.io/client-go => /home/uablrek/go/src/k8s.io/kubernetes/staging/src/k8s.io/client-go
+)
