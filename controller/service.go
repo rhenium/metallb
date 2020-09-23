@@ -46,6 +46,10 @@ func (c *controller) convergeBalancer(l log.Logger, key string, svc *v1.Service)
 		return true
 	}
 
+	if svc.Spec.ClusterIPs != nil && len(svc.Spec.ClusterIPs) > 1 {
+		return c.convergeBalancerDual(l, key, svc)
+	}
+
 	// The assigned LB IP is the end state of convergence. If there's
 	// none or a malformed one, nuke all controlled state so that we
 	// start converging from a clean slate.
@@ -178,4 +182,106 @@ func (c *controller) allocateIP(key string, svc *v1.Service) (net.IP, error) {
 
 	// Okay, in that case just bruteforce across all pools.
 	return c.ips.Allocate(key, isIPv6, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc))
+}
+
+// Dual-stack
+
+func (c *controller) convergeBalancerDual(l log.Logger, key string, svc *v1.Service) bool {
+	var lbIP, lbIP2 net.IP
+
+	// The assigned LB IP is the end state of convergence. If there's
+	// none or a malformed one, nuke all controlled state so that we
+	// start converging from a clean slate.
+	if len(svc.Status.LoadBalancer.Ingress) > 1 {
+		lbIP = net.ParseIP(svc.Status.LoadBalancer.Ingress[0].IP)
+		lbIP2 = net.ParseIP(svc.Status.LoadBalancer.Ingress[1].IP)
+	}
+
+	// It's possible the config mutated and the IP we have no longer
+	// makes sense. If so, clear it out and give the rest of the logic
+	// a chance to allocate again.
+	if lbIP != nil && lbIP2 != nil {
+		// This assign is idempotent if the config is consistent,
+		// otherwise it'll fail and tell us why.
+		if err := c.ips.AssignDual(key, lbIP, lbIP2, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc)); err != nil {
+			l.Log("event", "clearAssignment", "reason", "notAllowedByConfig", "msg", "current IP not allowed by config, clearing")
+			c.clearServiceState(key, svc)
+			lbIP = nil
+		}
+
+		if lbIP != nil {
+			// The user might also have changed the pool annotation, and
+			// requested a different pool than the one that is currently
+			// allocated.
+			desiredPool := svc.Annotations["metallb.universe.tf/address-pool"]
+			if desiredPool != "" && c.ips.Pool(key) != desiredPool {
+				l.Log("event", "clearAssignment", "reason", "differentPoolRequested", "msg", "user requested a different pool than the one currently assigned")
+				c.clearServiceState(key, svc)
+				lbIP = nil
+			}
+		}
+	} else {
+		c.clearServiceState(key, svc)
+		lbIP = nil
+	}
+
+	// The (singular) svc.Spec.LoadBalancerIP is ignored for dual-stack
+	if svc.Spec.LoadBalancerIP != "" {
+		l.Log("event", "loadBalancerIP", "reason", "ignored", "msg", "for dual-stack")
+	}
+
+	// If lbIP's is still nil at this point, try to allocate.
+	if lbIP == nil {
+		if !c.synced {
+			l.Log("op", "allocateIP", "error", "controller not synced", "msg", "controller not synced yet, cannot allocate IP; will retry after sync")
+			return false
+		}
+		ip, ip2, err := c.allocateIPDual(key, svc)
+		if err != nil {
+			l.Log("op", "allocateIP", "error", err, "msg", "IP allocation failed")
+			c.client.Errorf(svc, "AllocationFailed", "Failed to allocate IP for %q: %s", key, err)
+			// The outer controller loop will retry converging this
+			// service when another service gets deleted, so there's
+			// nothing to do here but wait to get called again later.
+			return true
+		}
+		lbIP = ip
+		lbIP2 = ip2
+		l.Log("event", "ipAllocated", "ip", lbIP, "ip2", lbIP2, "msg", "IP address assigned by controller")
+		c.client.Infof(svc, "IPAllocated", "Assigned IP %q %q", lbIP, lbIP2)
+	}
+
+	if lbIP == nil || lbIP2 == nil {
+		l.Log("bug", "true", "msg", "internal error: failed to allocate an IP, but did not exit convergeService early!")
+		c.client.Errorf(svc, "InternalError", "didn't allocate an IP but also did not fail")
+		c.clearServiceState(key, svc)
+		return true
+	}
+
+	pool := c.ips.Pool(key)
+	if pool == "" || c.config.Pools[pool] == nil {
+		l.Log("bug", "true", "ip", lbIP, "msg", "internal error: allocated IP has no matching address pool")
+		c.client.Errorf(svc, "InternalError", "allocated an IP that has no pool")
+		c.clearServiceState(key, svc)
+		return true
+	}
+
+	// At this point, we have an IP selected somehow, all that remains
+	// is to program the data plane.
+	svc.Status.LoadBalancer.Ingress = []v1.LoadBalancerIngress{{IP: lbIP.String()}, {IP: lbIP2.String()}}
+	return true
+}
+
+func (c *controller) allocateIPDual(key string, svc *v1.Service) (net.IP, net.IP, error) {
+	desiredPool := svc.Annotations["metallb.universe.tf/address-pool"]
+	if desiredPool != "" {
+		ip, ip2, err := c.ips.AllocateFromPoolDual(key, desiredPool, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc))
+		if err != nil {
+			return nil, nil, err
+		}
+		return ip, ip2, nil
+	}
+
+	// Okay, in that case just bruteforce across all pools.
+	return c.ips.AllocateDual(key, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc))
 }
