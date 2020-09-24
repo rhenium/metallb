@@ -239,11 +239,11 @@ func (c *controller) convergeBalancerDual(l log.Logger, key string, svc *v1.Serv
 			l.Log("op", "allocateIP", "load-balancer-ips", len(ips), "msg", "Must be two addresses")
 			return true
 		}
-		if lbIP = net.ParseIP(strings.Trim(ips[0], " ")); lbIP == nil {
+		if lbIP = net.ParseIP(strings.TrimSpace(ips[0])); lbIP == nil {
 			l.Log("op", "allocateIP", "load-balancer-ips", ips[0], "msg", "Invalid addresses")
 			return true
 		}
-		if lbIP2 = net.ParseIP(strings.Trim(ips[1], "")); lbIP2 == nil {
+		if lbIP2 = net.ParseIP(strings.TrimSpace(ips[1])); lbIP2 == nil {
 			l.Log("op", "allocateIP", "load-balancer-ips", ips[1], "msg", "Invalid addresses")
 			return true
 		}
