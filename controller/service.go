@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/go-kit/kit/log"
 	v1 "k8s.io/api/core/v1"
@@ -227,7 +228,34 @@ func (c *controller) convergeBalancerDual(l log.Logger, key string, svc *v1.Serv
 
 	// The (singular) svc.Spec.LoadBalancerIP is ignored for dual-stack
 	if svc.Spec.LoadBalancerIP != "" {
-		l.Log("event", "loadBalancerIP", "reason", "ignored", "msg", "for dual-stack")
+		l.Log("event", "loadBalancerIP", "reason", "N/A", "msg", "loadBalancerIP ignored for dual-stack")
+	}
+
+	if requestedIPs := svc.Annotations["metallb.universe.tf/load-balancer-ips"]; requestedIPs != "" {
+		// Until a svc.Spec.LoadBalancerIPs exists we use an annotation.
+		// requestedIPs must be a comma-separated list of 2 addresses, one from each family.
+		ips := strings.Split(requestedIPs, ",")
+		if len(ips) != 2 {
+			l.Log("op", "allocateIP", "load-balancer-ips", len(ips), "msg", "Must be two addresses")
+			return true
+		}
+		if lbIP = net.ParseIP(strings.Trim(ips[0], " ")); lbIP == nil {
+			l.Log("op", "allocateIP", "load-balancer-ips", ips[0], "msg", "Invalid addresses")
+			return true
+		}
+		if lbIP2 = net.ParseIP(strings.Trim(ips[1], "")); lbIP2 == nil {
+			l.Log("op", "allocateIP", "load-balancer-ips", ips[1], "msg", "Invalid addresses")
+			return true
+		}
+		if (lbIP.To4() == nil) == (lbIP2.To4() == nil) {
+			l.Log("op", "allocateIP", "load-balancer-ips", requestedIPs, "msg", "Same family")
+		}
+
+		// Try to assign the requested IPs
+		if err := c.ips.AssignDual(key, lbIP, lbIP2, k8salloc.Ports(svc), k8salloc.SharingKey(svc), k8salloc.BackendKey(svc)); err != nil {
+			l.Log("op", "allocateIP", "error", err, "msg", "Can't assign requested IPs")
+			return true
+		}
 	}
 
 	// If lbIP's is still nil at this point, try to allocate.
