@@ -8,8 +8,8 @@ require (
 	github.com/eapache/channels v1.1.0 // indirect
 	github.com/eapache/queue v1.1.0 // indirect
 	github.com/go-kit/kit v0.9.0
-	github.com/golang/protobuf v1.4.2
-	github.com/google/go-cmp v0.4.0
+	github.com/golang/protobuf v1.4.3
+	github.com/google/go-cmp v0.5.2
 	github.com/hashicorp/memberlist v0.1.7
 	github.com/imdario/mergo v0.3.6 // indirect
 	github.com/mdlayher/arp v0.0.0-20190313224443-98a83c8a2717
@@ -23,16 +23,10 @@ require (
 	github.com/vishvananda/netlink v1.0.0 // indirect
 	github.com/vishvananda/netns v0.0.0-20190625233234-7109fa855b0f // indirect
 	go.universe.tf/virtuakube v0.0.0-20190708182722-512c11153571
-	golang.org/x/sys v0.0.0-20200622214017-ed371f2e16b4
+	golang.org/x/sys v0.0.0-20201112073958-5cba982894dd
 	gopkg.in/yaml.v2 v2.2.8
-	k8s.io/api v0.19.0
-	k8s.io/apimachinery v0.19.0
-	k8s.io/client-go v0.19.0
+	k8s.io/api v0.20.0
+	k8s.io/apimachinery v0.20.0
+	k8s.io/client-go v0.20.0
 	k8s.io/klog v0.3.1
-)
-
-replace (
-	k8s.io/api => /home/uablrek/go/src/k8s.io/kubernetes/staging/src/k8s.io/api
-	k8s.io/apimachinery => /home/uablrek/go/src/k8s.io/kubernetes/staging/src/k8s.io/apimachinery
-	k8s.io/client-go => /home/uablrek/go/src/k8s.io/kubernetes/staging/src/k8s.io/client-go
 )
