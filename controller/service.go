@@ -211,8 +211,8 @@ func (c *controller) convergeBalancerDual(l log.Logger, key string, svc *v1.Serv
 	var lbips []net.IP
 	if len(svc.Status.LoadBalancer.Ingress) > 1 {
 		var err error
-		iptype, lbips, error = c.ips.ParseIPs([]string{svc.Status.LoadBalancer.Ingress[0].IP, svc.Status.LoadBalancer.Ingress[1].IP})
-		if error != nil {
+		iptype, lbips, err = c.ips.ParseIPs([]string{svc.Status.LoadBalancer.Ingress[0].IP, svc.Status.LoadBalancer.Ingress[1].IP})
+		if err != nil {
 			iptype = allocator.Invalid
 		}
 	}
