@@ -3,8 +3,72 @@ title: Release Notes
 weight: 8
 ---
 
-## Version 0.9.5
+## Version 0.10.2
+
+Bug Fixes:
+
+- Fix a missing RBAC update in the manifests used by the helm chart.
+  ([Issue #878](https://github.com/metallb/metallb/issues/878))
+
+## Version 0.10.1
+
+Bug Fixes:
+
+- Fix the images in `manifests/metallb.yaml` to refer to the images for the
+  release tag instead of the `main` branch.
+  ([Issue #874](https://github.com/metallb/metallb/issues/874))
+
+## Version 0.10.0
+
+New Features:
+
+- Helm Charts are now provided. You should be able to migrate from Bitnami
+  Charts to MetalLB Charts by just changing the repo and upgrading. For more
+  details, see the installation documentation.
+
+- Version 0.9.x required the creation of a Secret called `memberlist`. This
+  Secret is now automatically created by the MetalLB controller if it does not
+  already exist. To use this feature you must set the new `ml-secret-name` and `deployment`
+  options or `METALLB_ML_SECRET_NAME` and `METALLB_DEPLOYMENT` environment variables.
+  This is already done in the manifests provided with this release.
+
+- Endpoint Slices support. Endpoint slices are the proposed and more scalable
+  way introduced in k8s to find services endpoints. From this version, MetalLB checks for
+  EndpointSlices availability and uses them, otherwise it backs up to endpoints.
+
+Changes in behavior:
+
+- The `port` option to the `speaker`, which is the prometheus metrics port, now
+  defaults to port `7472`. This was already the default in the manifests
+  included with MetalLB, but the binary itself previously defaulted to port
+  `80`.
+
+- The `config-ns` option of both the `controller` and the `speaker` and the `ml-namespace`
+  option and `METALLB_ML_NAMESPACE` environment variable of the `speaker` are
+  replaced by the `namespace` option or the `METALLB_NAMESPACE` environment
+  variable. If not set the namespace is read from `/var/run/secrets/kubernetes.io/serviceaccount/namespace`.
+
+This release includes contributions from Adit Sachde, Adrian Goins, Andrew
+Grosser, Brian Topping, Chance Carey, Chris Tarazi, Damien TOURDE, David
+Anderson, Dax McDonald, dougbtv, Etienne Champetier, Federico Paolinelli,
+Graeme Lawes, Henry-Kim-Youngwoo, Igal Serban, Jan Krcmar, JinLin Fu, Johannes
+Liebermann, Jumpy Squirrel, Lars Ekman, Leroy Shirto, Mark Gray, NorthFuture,
+Oleg Mayko, Reinier Schoof, Rodrigo Campos, Russell Bryant, Sebastien Dionne,
+Stefan Lasiewski, Steven Follis, sumarsono, Thorsten Schifferdecker, toby
+cabot, Tomofumi Hayashi, Tony Perez, and Yuan Liu. Thank you!
+
+## Version 0.9.6
 [Documentation for this release](https://metallb.universe.tf)
+
+Bugfixes:
+
+- Fix nodeAssigned event on k8s >= 1.20 ([#812](https://github.com/metallb/metallb/pull/812)).
+
+This release includes contributions from Lars Ekman, Rodrigo Campos, Russell
+Bryant and Stefan Lasiewski. Thanks for making MetalLB better!
+
+## Version 0.9.5
+[Documentation for this release](https://v0-9-5--metallb.netlify.com)
 
 New features:
 
@@ -648,4 +712,3 @@ Notable fixes:
 
 This was the first tagged version of MetalLB. Its changelog is
 effectively "MetalLB now exists, where previously it did not."
-

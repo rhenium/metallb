@@ -13,8 +13,8 @@ look at the [cloud compatibility]({{% relref "installation/clouds.md"
 %}}) page and make sure your cloud platform can work with MetalLB
 (most cannot).
 
-There are two supported ways to install MetalLB: using plain Kubernetes
-manifests, or using Kustomize.
+There are three supported ways to install MetalLB: using plain Kubernetes
+manifests, using Kustomize, or using Helm.
 
 ## Preparation
 
@@ -59,10 +59,8 @@ kubectl apply -f - -n kube-system
 To install MetalLB, apply the manifest:
 
 ```shell
-kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/main/manifests/namespace.yaml
-kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/main/manifests/metallb.yaml
-# On first install only
-kubectl create secret generic -n metallb-system memberlist --from-literal=secretkey="$(openssl rand -base64 128)"
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.10.2/manifests/namespace.yaml
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.10.2/manifests/metallb.yaml
 ```
 
 This will deploy MetalLB to your cluster, under the `metallb-system`
@@ -81,7 +79,6 @@ file. MetalLB's components will still start, but will remain idle
 until
 you
 [define and deploy a configmap]({{% relref "../configuration/_index.md" %}}).
-The `memberlist` secret contains the `secretkey` to encrypt the communication between speakers for the fast dead node detection.
 
 ## Installation with kustomize
 
@@ -94,9 +91,8 @@ on the remote kustomization fle :
 namespace: metallb-system
 
 resources:
-  - github.com/metallb/metallb//manifests?ref=v0.9.3
+  - github.com/metallb/metallb//manifests?ref=v0.10.2
   - configmap.yml 
-  - secret.yml
 ```
 
 If you want to use a
@@ -111,20 +107,40 @@ the configMap, as MetalLB is waiting for a configMap named `config`
 namespace: metallb-system
 
 resources:
-  - github.com/metallb/metallb//manifests?ref=v0.9.3
+  - github.com/metallb/metallb//manifests?ref=v0.10.2
 
 configMapGenerator:
 - name: config
   files:
     - configs/config
 
-secretGenerator:
-- name: memberlist
-  files:
-    - configs/secretkey
-
 generatorOptions:
  disableNameSuffixHash: true
+```
+
+## Installation with Helm
+
+You can install MetallLB with [helm](https://helm.sh/)
+by using the helm chart repository: https://metallb.github.io/metallb
+
+```yaml
+helm repo add metallb https://metallb.github.io/metallb
+helm install metallb metallb/metallb
+```
+
+A values file may be specified on installation. This is recommended for providing configs in helm values:
+```yaml
+helm install metallb metallb/metallb -f values.yaml
+```
+
+MetalLB configs are set in values.yaml under `configInLine`:
+```yaml
+configInline:
+  address-pools:
+   - name: default
+     protocol: layer2
+     addresses:
+     - 198.51.100.0/24
 ```
 
 ## Upgrade
@@ -140,3 +156,4 @@ described above.
 Please take the known limitations for [layer2](https://metallb.universe.tf/concepts/layer2/#limitations)
 and [bgp](https://metallb.universe.tf/concepts/bgp/#limitations) into account when performing an
 upgrade.
+=======

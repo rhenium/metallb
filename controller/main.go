@@ -17,6 +17,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"reflect"
 
@@ -27,12 +28,11 @@ import (
 	"go.universe.tf/metallb/internal/version"
 
 	"github.com/go-kit/kit/log"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 )
 
 // Service offers methods to mutate a Kubernetes service object.
 type service interface {
-	Update(svc *v1.Service) (*v1.Service, error)
 	UpdateStatus(svc *v1.Service) error
 	Infof(svc *v1.Service, desc, msg string, args ...interface{})
 	Errorf(svc *v1.Service, desc, msg string, args ...interface{})
@@ -45,7 +45,7 @@ type controller struct {
 	ips    *allocator.Allocator
 }
 
-func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _ *v1.Endpoints) k8s.SyncState {
+func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _ k8s.EpsOrSlices) k8s.SyncState {
 	l.Log("event", "startUpdate", "msg", "start of service update")
 	defer l.Log("event", "endUpdate", "msg", "end of service update")
 
@@ -76,19 +76,11 @@ func (c *controller) SetBalancer(l log.Logger, name string, svcRo *v1.Service, _
 		return k8s.SyncStateSuccess
 	}
 
-	var err error
-	if !(reflect.DeepEqual(svcRo.Annotations, svc.Annotations) && reflect.DeepEqual(svcRo.Spec, svc.Spec)) {
-		svcRo, err = c.client.Update(svc)
-		if err != nil {
-			l.Log("op", "updateService", "error", err, "msg", "failed to update service")
-			return k8s.SyncStateError
-		}
-	}
 	if !reflect.DeepEqual(svcRo.Status, svc.Status) {
 		var st v1.ServiceStatus
 		st, svc = svc.Status, svcRo.DeepCopy()
 		svc.Status = st
-		if err = c.client.UpdateStatus(svc); err != nil {
+		if err := c.client.UpdateStatus(svc); err != nil {
 			l.Log("op", "updateServiceStatus", "error", err, "msg", "failed to update service status")
 			return k8s.SyncStateError
 		}
@@ -136,12 +128,23 @@ func main() {
 	var (
 		port       = flag.Int("port", 7472, "HTTP listening port for Prometheus metrics")
 		config     = flag.String("config", "config", "Kubernetes ConfigMap containing MetalLB's configuration")
-		configNS   = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
+		namespace  = flag.String("namespace", os.Getenv("METALLB_NAMESPACE"), "config / memberlist secret namespace")
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		mlSecret   = flag.String("ml-secret-name", os.Getenv("METALLB_ML_SECRET_NAME"), "name of the memberlist secret to create")
+		deployName = flag.String("deployment", os.Getenv("METALLB_DEPLOYMENT"), "name of the MetalLB controller Deployment")
 	)
 	flag.Parse()
 
-	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "msg", "MetalLB controller starting "+version.String())
+	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "goversion", version.GoString(), "msg", "MetalLB controller starting "+version.String())
+
+	if *namespace == "" {
+		bs, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+		if err != nil {
+			logger.Log("op", "startup", "msg", "Unable to get namespace from pod service account data, please specify --namespace or METALLB_NAMESPACE", "error", err)
+			os.Exit(1)
+		}
+		*namespace = string(bs)
+	}
 
 	c := &controller{
 		ips: allocator.New(),
@@ -150,7 +153,7 @@ func main() {
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "metallb-controller",
 		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
+		ConfigMapNS:   *namespace,
 		MetricsPort:   *port,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
@@ -162,6 +165,14 @@ func main() {
 	if err != nil {
 		logger.Log("op", "startup", "error", err, "msg", "failed to create k8s client")
 		os.Exit(1)
+	}
+
+	if *mlSecret != "" {
+		err = client.CreateMlSecret(*namespace, *deployName, *mlSecret)
+		if err != nil {
+			logger.Log("op", "startup", "error", err, "msg", "failed to create memberlist secret")
+			os.Exit(1)
+		}
 	}
 
 	c.client = client

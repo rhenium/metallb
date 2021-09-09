@@ -17,6 +17,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"os"
 	"os/signal"
@@ -49,7 +50,6 @@ var announcing = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 
 // Service offers methods to mutate a Kubernetes service object.
 type service interface {
-	Update(svc *v1.Service) (*v1.Service, error)
 	UpdateStatus(svc *v1.Service) error
 	Infof(svc *v1.Service, desc, msg string, args ...interface{})
 	Errorf(svc *v1.Service, desc, msg string, args ...interface{})
@@ -65,21 +65,29 @@ func main() {
 	}
 
 	var (
-		config      = flag.String("config", "config", "Kubernetes ConfigMap containing MetalLB's configuration")
-		configNS    = flag.String("config-ns", "", "config file namespace (only needed when running outside of k8s)")
-		kubeconfig  = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
-		host        = flag.String("host", os.Getenv("METALLB_HOST"), "HTTP host address")
-		mlBindAddr  = flag.String("ml-bindaddr", os.Getenv("METALLB_ML_BIND_ADDR"), "Bind addr for MemberList (fast dead node detection)")
-		mlBindPort  = flag.String("ml-bindport", os.Getenv("METALLB_ML_BIND_PORT"), "Bind port for MemberList (fast dead node detection)")
-		mlLabels    = flag.String("ml-labels", os.Getenv("METALLB_ML_LABELS"), "Labels to match the speakers (for MemberList / fast dead node detection)")
-		mlNamespace = flag.String("ml-namespace", os.Getenv("METALLB_ML_NAMESPACE"), "Namespace of the speakers (for MemberList / fast dead node detection)")
-		mlSecret    = flag.String("ml-secret-key", os.Getenv("METALLB_ML_SECRET_KEY"), "Secret key for MemberList (fast dead node detection)")
-		myNode      = flag.String("node-name", os.Getenv("METALLB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
-		port        = flag.Int("port", 80, "HTTP listening port")
+		config     = flag.String("config", "config", "Kubernetes ConfigMap containing MetalLB's configuration")
+		namespace  = flag.String("namespace", os.Getenv("METALLB_NAMESPACE"), "config file and speakers namespace")
+		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file (only needed when running outside of k8s)")
+		host       = flag.String("host", os.Getenv("METALLB_HOST"), "HTTP host address")
+		mlBindAddr = flag.String("ml-bindaddr", os.Getenv("METALLB_ML_BIND_ADDR"), "Bind addr for MemberList (fast dead node detection)")
+		mlBindPort = flag.String("ml-bindport", os.Getenv("METALLB_ML_BIND_PORT"), "Bind port for MemberList (fast dead node detection)")
+		mlLabels   = flag.String("ml-labels", os.Getenv("METALLB_ML_LABELS"), "Labels to match the speakers (for MemberList / fast dead node detection)")
+		mlSecret   = flag.String("ml-secret-key", os.Getenv("METALLB_ML_SECRET_KEY"), "Secret key for MemberList (fast dead node detection)")
+		myNode     = flag.String("node-name", os.Getenv("METALLB_NODE_NAME"), "name of this Kubernetes node (spec.nodeName)")
+		port       = flag.Int("port", 7472, "HTTP listening port")
 	)
 	flag.Parse()
 
-	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "msg", "MetalLB speaker starting "+version.String())
+	logger.Log("version", version.Version(), "commit", version.CommitHash(), "branch", version.Branch(), "goversion", version.GoString(), "msg", "MetalLB speaker starting "+version.String())
+
+	if *namespace == "" {
+		bs, err := ioutil.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+		if err != nil {
+			logger.Log("op", "startup", "msg", "Unable to get namespace from pod service account data, please specify --namespace or METALLB_NAMESPACE", "error", err)
+			os.Exit(1)
+		}
+		*namespace = string(bs)
+	}
 
 	if *myNode == "" {
 		logger.Log("op", "startup", "error", "must specify --node-name or METALLB_NODE_NAME", "msg", "missing configuration")
@@ -88,7 +96,7 @@ func main() {
 
 	stopCh := make(chan struct{})
 	go func() {
-		c1 := make(chan os.Signal)
+		c1 := make(chan os.Signal, 1)
 		signal.Notify(c1, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM)
 		<-c1
 		logger.Log("op", "shutdown", "msg", "starting shutdown")
@@ -97,7 +105,7 @@ func main() {
 	}()
 	defer logger.Log("op", "shutdown", "msg", "done")
 
-	sList, err := speakerlist.New(logger, *myNode, *mlBindAddr, *mlBindPort, *mlSecret, *mlNamespace, *mlLabels, stopCh)
+	sList, err := speakerlist.New(logger, *myNode, *mlBindAddr, *mlBindPort, *mlSecret, *namespace, *mlLabels, stopCh)
 	if err != nil {
 		os.Exit(1)
 	}
@@ -116,7 +124,7 @@ func main() {
 	client, err := k8s.New(&k8s.Config{
 		ProcessName:   "metallb-speaker",
 		ConfigMapName: *config,
-		ConfigMapNS:   *configNS,
+		ConfigMapNS:   *namespace,
 		NodeName:      *myNode,
 		Logger:        logger,
 		Kubeconfig:    *kubeconfig,
@@ -195,17 +203,17 @@ func newController(cfg controllerConfig) (*controller, error) {
 	return ret, nil
 }
 
-func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service, eps *v1.Endpoints) k8s.SyncState {
+func (c *controller) SetBalancer(l gokitlog.Logger, name string, svc *v1.Service, eps k8s.EpsOrSlices) k8s.SyncState {
 	if svc == nil {
 		return c.deleteBalancer(l, name, "serviceDeleted")
 	}
 
-	l.Log("event", "startUpdate", "msg", "start of service update")
-	defer l.Log("event", "endUpdate", "msg", "end of service update")
-
 	if svc.Spec.Type != "LoadBalancer" {
 		return c.deleteBalancer(l, name, "notLoadBalancer")
 	}
+
+	l.Log("event", "startUpdate", "msg", "start of service update")
+	defer l.Log("event", "endUpdate", "msg", "end of service update")
 
 	if c.config == nil {
 		l.Log("event", "noConfig", "msg", "not processing, still waiting for config")
@@ -359,7 +367,7 @@ func (c *controller) SetNode(l gokitlog.Logger, node *v1.Node) k8s.SyncState {
 // A Protocol can advertise an IP address.
 type Protocol interface {
 	SetConfig(gokitlog.Logger, *config.Config) error
-	ShouldAnnounce(gokitlog.Logger, string, *v1.Service, *v1.Endpoints) string
+	ShouldAnnounce(gokitlog.Logger, string, *v1.Service, k8s.EpsOrSlices) string
 	SetBalancer(gokitlog.Logger, string, net.IP, *config.Pool) error
 	DeleteBalancer(gokitlog.Logger, string, string) error
 	SetNode(gokitlog.Logger, *v1.Node) error

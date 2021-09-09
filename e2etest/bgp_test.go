@@ -1,318 +1,81 @@
-package main
+/*
+Copyright 2016 The Kubernetes Authors.
+Copyright 2021 The MetalLB Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+// https://github.com/kubernetes/kubernetes/blob/92aff21558831b829fbc8cbca3d52edc80c01aa3/test/e2e/network/loadbalancer.go#L878
+
+package e2e
 
 import (
 	"context"
 	"fmt"
-	"strings"
-	"testing"
+	"net"
+	"strconv"
 	"time"
 
-	vk "go.universe.tf/virtuakube"
+	"github.com/onsi/ginkgo"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/kubernetes/test/e2e/framework"
+	e2eservice "k8s.io/kubernetes/test/e2e/framework/service"
 )
 
-const bgpService = `
-apiVersion: v1
-kind: Service
-metadata:
-  name: mirror-cluster
-spec:
-  ports:
-  - port: 80
-    targetPort: 8080
-  selector:
-    app: mirror
-  type: LoadBalancer
-  loadBalancerIP: 10.249.0.1
-  externalTrafficPolicy: Cluster
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mirror-local
-spec:
-  ports:
-  - port: 80
-    targetPort: 8080
-  selector:
-    app: mirror
-  type: LoadBalancer
-  loadBalancerIP: 10.249.0.2
-  externalTrafficPolicy: Local
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mirror-shared1
-  annotations:
-    metallb.universe.tf/allow-shared-ip: mirror
-spec:
-  ports:
-  - port: 80
-    targetPort: 8080
-  selector:
-    app: mirror
-  type: LoadBalancer
-  loadBalancerIP: 10.249.0.3
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mirror-shared2
-  annotations:
-    metallb.universe.tf/allow-shared-ip: mirror
-spec:
-  ports:
-  - port: 81
-    targetPort: 8081
-  selector:
-    app: mirror
-  type: LoadBalancer
-  loadBalancerIP: 10.249.0.3
-`
+var _ = ginkgo.Describe("BGP", func() {
+	f := framework.NewDefaultFramework("bgp")
+	var loadBalancerCreateTimeout time.Duration
 
-// TODO notes:
-//
-//   Does net/http leak connections when there is a context timeout
-//   during an uninterruptible Dial? Sometimes we seem to hit a wall
-//   where SSH refuses to open more connections, implying we're
-//   dropping some.
-//
-//   Need a better way to track, on a fine granularity, "expected
-//   broken" tests, so we can verify that they don't start
-//   unexpectedly passing, and can produce a compatibility matrix.
-//   Should I write my own test framework? That seems fraught with
-//   peril, but maybe something that wraps testing to provide some
-//   extra smarts?
+	var cs clientset.Interface
 
-func TestBGP(t *testing.T) { testAll(t, testBGP) }
-func testBGP(t *testing.T, u *vk.Universe) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-
-	configureBGP(ctx, t, u)
-
-	cluster := u.Cluster("cluster")
-	client := u.VM("client")
-	//	kube := cluster.KubernetesClient()
-
-	// Create a service, and wait for it to get an IP.
-	if err := cluster.ApplyManifest([]byte(bgpService)); err != nil {
-		t.Fatalf("creating LB service: %v", err)
-	}
-
-	clusterURL := "http://10.249.0.1"
-	localURL := "http://10.249.0.2"
-	sharedURL1 := "http://10.249.0.3:80"
-	sharedURL2 := "http://10.249.0.3:81"
-
-	load := NewLoadGenerator(
-		client,
-		clusterURL,
-		localURL,
-		sharedURL1,
-		sharedURL2,
-	)
-	defer load.Close()
-
-	t.Run("cluster", func(t *testing.T) {
-		var stats *Stats
-		waitFor(ctx, t, func() error {
-			stats = load.Stats(clusterURL, stats)
-
-			if stats.Errors > 0 {
-				return fmt.Errorf("%s still returning errors", clusterURL)
-			}
-			if stats.Pods() != 2 {
-				return fmt.Errorf("%s has %d pods, waiting for 2", clusterURL, stats.Pods())
-			}
-			if err := stats.BalancedByPod(0.2); err != nil {
-				return fmt.Errorf("%s %s", clusterURL, err)
-			}
-			return nil
-		})
-
-		if stats.Nodes() != 2 {
-			t.Errorf("want 2 nodes processing traffic, got %d", stats.Nodes())
-		}
-		if err := stats.BalancedByNode(0.2); err != nil {
-			t.Error(err)
-		}
-
-		testBroken(t, "client-ip-correct", func(t *testing.T) {
-			if stats.Clients() != 2 {
-				t.Errorf("want 2 client sending traffic, got %d", stats.Clients())
-			}
-			if err := stats.BalancedByClient(0.2); err != nil {
-				t.Error(err)
-			}
-		})
+	ginkgo.BeforeEach(func() {
+		cs = f.ClientSet
+		loadBalancerCreateTimeout = e2eservice.GetServiceLoadBalancerCreationTimeout(cs)
 	})
 
-	t.Run("local", func(t *testing.T) {
-		var stats *Stats
-		waitFor(ctx, t, func() error {
-			stats = load.Stats(localURL, stats)
-
-			if stats.Errors > 0 {
-				return fmt.Errorf("%s still returning errors", localURL)
-			}
-			if stats.Pods() != 2 {
-				return fmt.Errorf("%s has %d pods, waiting for 2", localURL, stats.Pods())
-			}
-			if err := stats.BalancedByPod(0.2); err != nil {
-				return fmt.Errorf("%s %s", localURL, err)
-			}
-
-			return nil
-		})
-
-		if stats.Nodes() != 2 {
-			t.Errorf("want 2 nodes processing traffic, got %d", stats.Nodes())
+	ginkgo.AfterEach(func() {
+		if ginkgo.CurrentGinkgoTestDescription().Failed {
+			DescribeSvc(f.Namespace.Name)
 		}
-		if err := stats.BalancedByNode(0.2); err != nil {
-			t.Error(err)
-		}
-
-		testBroken(t, "client-ip-correct", func(t *testing.T) {
-			if stats.Clients() != 1 {
-				t.Errorf("want 1 client sending traffic, got %d", stats.Clients())
-			}
-			if err := stats.BalancedByClient(0.2); err != nil {
-				t.Error(err)
-			}
-		})
 	})
 
-	t.Run("shared", func(t *testing.T) {
-		var stats1, stats2 *Stats
-		waitFor(ctx, t, func() error {
-			stats1 = load.Stats(sharedURL1, stats2)
+	ginkgo.It("should work for type=Loadbalancer", func() {
+		namespace := f.Namespace.Name
+		serviceName := "external-local-lb"
+		jig := e2eservice.NewTestJig(cs, namespace, serviceName)
 
-			if stats1.Errors > 0 {
-				return fmt.Errorf("%s still returning errors", sharedURL1)
-			}
-			if stats1.Pods() != 2 {
-				return fmt.Errorf("%s has %d pods, waiting for 2", sharedURL1, stats1.Pods())
-			}
-			if err := stats1.BalancedByPod(0.2); err != nil {
-				return fmt.Errorf("%s %s", sharedURL1, err)
-			}
+		svc, err := jig.CreateLoadBalancerService(loadBalancerCreateTimeout,
+			nil)
+		framework.ExpectNoError(err)
 
-			stats2 = load.Stats(sharedURL2, stats2)
+		_, err = jig.Run(nil)
+		framework.ExpectNoError(err)
 
-			if stats2.Errors > 0 {
-				return fmt.Errorf("%s still returning errors", sharedURL2)
-			}
-			if stats2.Pods() != 2 {
-				return fmt.Errorf("%s has %d pods, waiting for 2", sharedURL2, stats2.Pods())
-			}
-			if err := stats2.BalancedByPod(0.2); err != nil {
-				return fmt.Errorf("%s %s", sharedURL2, err)
-			}
+		defer func() {
+			err = cs.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
+			framework.ExpectNoError(err)
+		}()
 
-			return nil
-		})
+		port := strconv.Itoa(int(svc.Spec.Ports[0].Port))
+		ingressIP := e2eservice.GetIngressPoint(
+			&svc.Status.LoadBalancer.Ingress[0])
 
-		if stats1.Nodes() != 2 {
-			t.Errorf("want 2 nodes processing traffic, got %d", stats1.Nodes())
-		}
-		if stats2.Nodes() != 2 {
-			t.Errorf("want 2 nodes processing traffic, got %d", stats2.Nodes())
-		}
-		if err := stats1.BalancedByNode(0.2); err != nil {
-			t.Error(err)
-		}
-		if err := stats2.BalancedByNode(0.2); err != nil {
-			t.Error(err)
-		}
+		ginkgo.By("checking connectivity to its external VIP")
 
-		testBroken(t, "client-ip-correct", func(t *testing.T) {
-			if stats1.Clients() != 2 {
-				t.Errorf("want 2 client sending traffic, got %d", stats1.Clients())
-			}
-			if err := stats1.BalancedByClient(0.2); err != nil {
-				t.Error(err)
-			}
-			if stats2.Clients() != 2 {
-				t.Errorf("want 2 client sending traffic, got %d", stats2.Clients())
-			}
-			if err := stats2.BalancedByClient(0.2); err != nil {
-				t.Error(err)
-			}
-		})
+		hostport := net.JoinHostPort(ingressIP, port)
+		address := fmt.Sprintf("http://%s/", hostport)
+		_, err = runCommand(true, "wget", "-O-", "-q", address, "-T", "60")
+		framework.ExpectNoError(err)
 	})
-}
 
-// Helpers
-
-// configureBGP installs a MetalLB configuration for BGP, and waits
-// for peering to come up on the client.
-func configureBGP(ctx context.Context, t *testing.T, u *vk.Universe) {
-	cluster := u.Cluster("cluster")
-	client := u.VM("client")
-
-	cfg := []byte(fmt.Sprintf(`
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  namespace: metallb-system
-  name: config
-data:
-  config: |
-    peers:
-    - peer-address: %s
-      peer-asn: 64513
-      my-asn: 64512
-    address-pools:
-    - name: default
-      protocol: bgp
-      addresses:
-      - 10.249.0.0/24
-      avoid-buggy-ips: true
-`, client.IPv4("net1")))
-	if err := cluster.ApplyManifest(cfg); err != nil {
-		t.Fatalf("Applying MetalLB configuration: %v", err)
-	}
-
-	waitFor(ctx, t, func() error {
-		for ctx.Err() == nil {
-			bs, err := client.Run("birdc show protocol")
-			if err != nil {
-				t.Fatalf("running birdc failed: %v", err)
-			}
-
-			// First 2 lines are a header, skip that. All other protocols
-			// should be in state "up"
-			//
-			// Sample birdc output:
-			//   BIRD 1.6.3 ready.
-			//   name     proto    table    state  since       info
-			//   kernel1  Kernel   master   up     17:53:32
-			//   device1  Device   master   up     17:53:32
-			//   direct1  Direct   master   up     17:53:32
-			//   controller BGP      master   start  17:53:32    Passive
-			//   node0    BGP      master   start  17:53:32    Passive
-			stilldown := []string{}
-			lines := strings.Split(string(bs), "\n")
-			if len(lines) < 3 {
-				continue
-			}
-			for _, line := range lines[2:] {
-				if strings.TrimSpace(line) == "" {
-					continue
-				}
-				fs := strings.Fields(line)
-				if fs[3] != "up" {
-					stilldown = append(stilldown, fs[0])
-				}
-			}
-
-			if len(stilldown) > 0 {
-				return fmt.Errorf("BGP sessions still down: %s", strings.Join(stilldown, ", "))
-			}
-
-			return nil
-		}
-		return ctx.Err()
-	})
-}
+})

@@ -50,9 +50,11 @@ agree to abide by its terms.
 
 ## Code changes
 
-Before you make significant code changes, please open an issue to
-discuss your plans. This will minimize the amount of review required
-for pull requests.
+Before you make significant code changes, please consider opening a pull
+request with a proposed design in the `design/` directory. That should
+reduce the amount of time required for code review. If you don't have a full
+design proposal ready, feel free to open an issue to discuss what you would
+like to do.
 
 All submissions require review. We use GitHub pull requests for this
 purpose. Consult [GitHub
@@ -64,7 +66,7 @@ information on using pull requests.
 By contributing to this project you agree to the Developer Certificate of
 Origin (DCO). This document was created by the Linux Kernel community and is a
 simple statement that you, as a contributor, have the legal right to make the
-contribution. See the [DCO](https://github.com/metallb/metallb/blob/main/DCO)
+contribution. See the [DCO](https://github.com/metallb/metallb/blob/v0.10.2/DCO)
 file for details.
 
 ## Code organization
@@ -120,7 +122,7 @@ To develop MetalLB, you'll need a couple of pieces of software:
 - [Kubectl](https://kubernetes.io/docs/tasks/tools/install-kubectl/), the Kubernetes commandline interface
 - [Invoke](https://www.pyinvoke.org) to drive the build system
 
->NOTE: The development environment was tested with **kind `v0.7.0`**. Older
+>NOTE: The development environment was tested with **kind `v0.9.0`**. Older
 >versions may not work since there have been breaking changes between minor
 >versions.
 
@@ -140,7 +142,7 @@ having them attach to a cluster might be more convenient than
 redeploying them to a cluster over and over.
 
 For the controller, the `-kubeconfig` and `-config-ns` command-line flags
-are needed.  Speakers need those and `-node-name`.
+are needed. Speakers need those and `-node-name`.
 
 For example:
 
